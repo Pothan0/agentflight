@@ -1,0 +1,10 @@
+{
+  "record": "environment",
+  "ts": "2026-11-02T16:14:57+00:00",
+  "agentflight_version": "0.1.0",
+  "python": "3.13.5",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "nvidia_smi": "unavailable: [WinError 2] The system cannot find the file specified",
+  "verdict": "CPU-MODE (no T4s found; GPU checklist not run here)",
+  "notes": "Run this script inside a Kaggle session with 2x T4 before any experiment (gate G2)."
+}

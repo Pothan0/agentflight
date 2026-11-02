@@ -1,0 +1,14 @@
+# --- secrets/env ---
+.env
+*.token
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# --- data artifacts ---
+# frozen suite is large but reproducible; keep it out of git, publish to HF
+data/*.json
+
+# results/ has its own .gitignore (ledger + phase state + environment tracked)

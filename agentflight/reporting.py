@@ -1,0 +1,153 @@
+"""Aggregation & reporting (build-prompt sections 7, 12).
+
+`agentflight report` reads ONLY results/ files (never hand-typed numbers —
+gate G5) and emits: per-condition tables (markdown), bootstrap CIs, the
+claims scoreboard inputs, and the README hero-figure data (accuracy vs
+prompt-tokens Pareto per policy).
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+from pathlib import Path
+
+from agentflight.metrics.formulas import bootstrap_ci, cost_per_completed_task, mean, percentiles
+
+
+def read_results(results_dir: str | Path) -> list[dict]:
+    """Read every mode-Q task_end summary row (JSONL, plain or gzipped)."""
+    rows: list[dict] = []
+    for p in sorted(Path(results_dir).glob("**/*.jsonl*")):
+        opener = gzip.open if p.suffix == ".gz" else open
+        try:
+            with opener(p, "rt", encoding="utf-8") as f:  # type: ignore[operator]
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    row = json.loads(line)
+                    if row.get("record") == "task_summary":
+                        rows.append(row)
+        except (json.JSONDecodeError, EOFError, OSError):
+            continue  # partial/corrupt file: skip, report separately
+    return rows
+
+
+def aggregate(rows: list[dict]) -> list[dict]:
+    """Group by (policy_id, context_tier) -> accuracy/efficiency aggregates."""
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        groups.setdefault((r.get("policy_id", "?"), r.get("context_tier", "?")), []).append(r)
+    out = []
+    for (policy, tier), rs in sorted(groups.items()):
+        ems = [r["em"] for r in rs]
+        f1s = [r["f1"] for r in rs]
+        ptoks = [r["prompt_tokens_total"] for r in rs]
+        gpu = [r["gpu_seconds"] for r in rs]
+        abandoned = [1.0 if r.get("abandoned") else 0.0 for r in rs]
+        em_ci = bootstrap_ci(ems, mean, n_resamples=10_000, seed=0)
+        out.append(
+            {
+                "policy_id": policy,
+                "context_tier": tier,
+                "n_tasks": len(rs),
+                "em": mean(ems),
+                "em_ci95": em_ci,
+                "f1": mean(f1s),
+                "abandonment_rate": mean(abandoned),
+                "prompt_tokens_mean": mean(ptoks),
+                "prompt_tokens_total": sum(ptoks),
+                "gpu_seconds_total": sum(gpu),
+                "cost_per_completed_task": cost_per_completed_task(sum(gpu), mean(ems)),
+            }
+        )
+    return out
+
+
+def replay_summary(records: list[dict]) -> list[dict]:
+    """Aggregate Mode-R replay records by condition."""
+    groups: dict[str, list[dict]] = {}
+    for r in records:
+        groups.setdefault(r.get("condition", "?"), []).append(r)
+    out = []
+    for cond, rs in sorted(groups.items()):
+        ttfts = [r["ttft_ms"] for r in rs if r.get("ttft_ms") is not None]
+        cached = [r.get("cached_tokens", 0) for r in rs]
+        prompt = [r.get("prompt_tokens", 0) for r in rs]
+        p = percentiles(ttfts, [0.5, 0.95]) if ttfts else {0.5: float("nan"), 0.95: float("nan")}
+        out.append(
+            {
+                "condition": cond,
+                "n_requests": len(rs),
+                "ttft_p50_ms": p[0.5],
+                "ttft_p95_ms": p[0.95],
+                "prefix_cache_hit_rate": (sum(cached) / sum(prompt)) if sum(prompt) else 0.0,
+                "errors": sum(1 for r in rs if r.get("error")),
+            }
+        )
+    return out
+
+
+def format_table(rows: list[dict], columns: list[tuple[str, str]]) -> str:
+    """columns: [(key, header)] -> markdown table."""
+    header = "| " + " | ".join(h for _, h in columns) + " |"
+    sep = "|" + "|".join("---" for _ in columns) + "|"
+    lines = [header, sep]
+    for r in rows:
+        cells = []
+        for key, _ in columns:
+            v = r.get(key)
+            if isinstance(v, float):
+                cells.append(f"{v:.4g}")
+            elif isinstance(v, tuple):
+                cells.append(f"[{v[0]:.3f}, {v[1]:.3f}]")
+            else:
+                cells.append(str(v))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+MODE_Q_COLUMNS = [
+    ("policy_id", "policy"),
+    ("context_tier", "tier"),
+    ("n_tasks", "n"),
+    ("em", "EM"),
+    ("em_ci95", "EM 95% CI"),
+    ("f1", "F1"),
+    ("abandonment_rate", "abandon"),
+    ("prompt_tokens_mean", "mean prompt toks"),
+    ("cost_per_completed_task", "GPU-s per completed"),
+]
+
+MODE_R_COLUMNS = [
+    ("condition", "condition"),
+    ("n_requests", "n"),
+    ("ttft_p50_ms", "TTFT p50 ms"),
+    ("ttft_p95_ms", "TTFT p95 ms"),
+    ("prefix_cache_hit_rate", "cache hit rate"),
+    ("errors", "errors"),
+]
+
+
+def write_markdown_report(results_dir: str | Path, out_path: str | Path) -> dict:
+    rows = read_results(results_dir)
+    agg = aggregate(rows)
+    lines = ["# AgentFlight results (generated by `agentflight report` — no hand-typed numbers)", ""]
+    if agg:
+        lines += ["## Mode Q — accuracy x efficiency per policy/tier", "", format_table(agg, MODE_Q_COLUMNS), ""]
+    else:
+        lines += ["## Mode Q — no task_summary rows yet", ""]
+    replay_rows_path = Path(results_dir) / "replay_records.jsonl"
+    if replay_rows_path.exists():
+        recs = [
+            json.loads(line)
+            for line in replay_rows_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        rsum = replay_summary(recs)
+        lines += ["## Mode R — replay per condition", "", format_table(rsum, MODE_R_COLUMNS), ""]
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"n_rows": len(rows), "n_groups": len(agg), "out": str(out_path)}

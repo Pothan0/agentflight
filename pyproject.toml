@@ -1,0 +1,68 @@
+[project]
+name = "agentflight"
+version = "0.1.0"
+description = "AgentFlight: an open agent-trace replay & systems-quality benchmark. Records multi-turn agent traces on open models, replays them under different serving configurations, re-executes them under different context-management policies, and measures end-task accuracy against systems metrics."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "AgentFlight contributors" }]
+keywords = ["llm", "agents", "benchmark", "kv-cache", "vllm", "inference"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.7",
+    "rank-bm25>=0.2.2",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+# Task-suite builder: downloads 2WikiMultihopQA + HotpotQA and freezes AgentFlight-QA.
+build-suite = [
+    "datasets>=3.0",
+]
+# Aggregation/reporting (parquet + tables).
+report = [
+    "pandas>=2.0",
+    "pyarrow>=16.0",
+]
+# Real-model runs need a tokenizer that matches the served model.
+gpu = [
+    "transformers>=4.51",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "datasets>=3.0",
+    "pandas>=2.0",
+    "pyarrow>=16.0",
+]
+# NOTE: vllm and lmcache are intentionally NOT dependencies here. They are
+# installed per-session on the GPU host by kaggle/bootstrap.sh with pinned
+# versions recorded into results/ENVIRONMENT.json (see build-prompt section 1/9).
+
+[project.scripts]
+agentflight = "agentflight.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentflight"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,7 @@
+# results/ is append-only experiment output, published to the HF dataset
+# repo per session. Gitignored here EXCEPT this .gitkeep and the ledger.
+*
+!.gitignore
+!gpu_ledger.jsonl
+!phase_state.jsonl
+!ENVIRONMENT.json
